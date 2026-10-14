@@ -2,21 +2,15 @@ name: Deploy Storybook to R2
 
 on:
   push:
-    branches: [main]
+    branches: [storybook-deploy]
     paths:
-      - "packages/certificates/**"
-      - "packages/email/**"
-      - "packages/question-types/**"
       - "packages/storybook/**"
       - "packages/ui/**"
-      - "packages/utils/**"
+      - "packages/storybook/package.json"
   workflow_dispatch:
 
 env:
   NODE_VERSION: "20"
-
-permissions:
-  contents: read
 
 jobs:
   build-and-deploy-storybook:
@@ -26,8 +20,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -53,15 +45,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build @cio/storybook workspace dependencies
-        run: pnpm turbo run build --filter=@cio/storybook^...
-
       - name: Build Storybook
-        run: pnpm --filter @cio/storybook run build
+        run: |
+          cd packages/storybook
+          pnpm run build
 
       - name: Upload Storybook to R2
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        run: pnpm --filter @cio/storybook run storybook:upload
+        run: |
+          cd packages/storybook
+          pnpm run upload:storybook
         env:
           CLOUDFLARE_ACCESS_KEY: ${{ secrets.CLOUDFLARE_ACCESS_KEY }}
           CLOUDFLARE_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_SECRET_ACCESS_KEY }}

@@ -1,0 +1,177 @@
+# ClassroomIO on Coolify — ready-to-paste Docker Compose
+# Based on docker/coolify/docker-compose.yaml with three verified fixes:
+#   1. dashboard: CSP_CONNECT_SRC_DOMAINS added so browser presigned uploads
+#      to MinIO pass the Content-Security-Policy (without it uploads fail).
+#   2. api: optional AI / Google OAuth / Unsplash / License keys exposed as
+#      Coolify UI variables (blank = feature off, never blocks boot).
+#   3. postgres healthcheck hardened (pg_isready + SELECT 1) to avoid
+#      transient sign-in 500s while Postgres is still in recovery.
+# Coolify auto-generates every SERVICE_* value (secrets, DB/MinIO creds,
+# domains). You only fill SMTP_* and optionally CIO_VERSION / API keys.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-classroomio}
+      - POSTGRES_USER=$SERVICE_USER_POSTGRES
+      - POSTGRES_PASSWORD=$SERVICE_PASSWORD_POSTGRES
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          "pg_isready -U $SERVICE_USER_POSTGRES -d ${POSTGRES_DB:-classroomio} && psql -U $SERVICE_USER_POSTGRES -d ${POSTGRES_DB:-classroomio} -tAc 'SELECT 1' >/dev/null"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      - SERVICE_FQDN_MINIO_9000
+      - MINIO_ROOT_USER=$SERVICE_USER_MINIO
+      - MINIO_ROOT_PASSWORD=$SERVICE_PASSWORD_MINIO
+      - MINIO_SERVER_URL=$SERVICE_URL_MINIO
+      - MINIO_API_CORS_ALLOW_ORIGIN=*
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 20s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    exclude_from_hc: true
+    entrypoint: >
+      /bin/sh -c "
+      set -e;
+      mc alias set local http://minio:9000 $SERVICE_USER_MINIO $SERVICE_PASSWORD_MINIO;
+      mc mb local/videos --ignore-existing;
+      mc mb local/documents --ignore-existing;
+      mc mb local/media --ignore-existing;
+      mc anonymous set download local/media;
+      "
+
+  api:
+    image: classroomio/api:${CIO_VERSION:-latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=production
+      - PORT=3081
+      - DATABASE_URL=postgresql://$SERVICE_USER_POSTGRES:$SERVICE_PASSWORD_POSTGRES@postgres:5432/${POSTGRES_DB:-classroomio}
+      - REDIS_URL=redis://redis:6379
+      - PUBLIC_IS_SELFHOSTED=true
+      - BETTER_AUTH_SECRET=$SERVICE_HEX_64_BETTERAUTH
+      - PRIVATE_SERVER_KEY=$SERVICE_HEX_64_PRIVATESERVER
+      - DASHBOARD_ORIGIN=$SERVICE_URL_DASHBOARD
+      - PUBLIC_SERVER_URL=$SERVICE_URL_DASHBOARD
+      - OBJECT_STORAGE_ENDPOINT=http://minio:9000
+      - OBJECT_STORAGE_PUBLIC_ENDPOINT=$SERVICE_URL_MINIO
+      - OBJECT_STORAGE_ACCESS_KEY_ID=$SERVICE_USER_MINIO
+      - OBJECT_STORAGE_SECRET_ACCESS_KEY=$SERVICE_PASSWORD_MINIO
+      - OBJECT_STORAGE_FORCE_PATH_STYLE=true
+      - OBJECT_STORAGE_MEDIA_PUBLIC_BASE_URL=$SERVICE_URL_MINIO/media
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_SENDER=${SMTP_SENDER}
+      # Optional integrations — blank keeps the feature off, never blocks boot
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - UNSPLASH_API_KEY=${UNSPLASH_API_KEY}
+      - LICENSE_KEY=${LICENSE_KEY}
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://localhost:3081/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  dashboard:
+    image: classroomio/dashboard:${CIO_VERSION:-latest}
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      - SERVICE_FQDN_DASHBOARD_3082
+      - NODE_ENV=production
+      - PORT=3082
+      - ORIGIN=$SERVICE_URL_DASHBOARD
+      - PUBLIC_IS_SELFHOSTED=true
+      - PRIVATE_SERVER_URL=http://api:3081
+      - PRIVATE_SERVER_KEY=$SERVICE_HEX_64_PRIVATESERVER
+      - CSP_MEDIA_SRC_DOMAINS=$SERVICE_URL_MINIO
+      # Required so browser presigned uploads to MinIO pass the CSP
+      - CSP_CONNECT_SRC_DOMAINS=$SERVICE_URL_MINIO
+      # Optional CSP allowlists for lesson embeds (e.g. https://www.youtube.com)
+      - CSP_FRAME_SRC_DOMAINS=${CSP_FRAME_SRC_DOMAINS}
+      - CSP_SCRIPT_SRC_DOMAINS=${CSP_SCRIPT_SRC_DOMAINS}
+      - CSP_STYLE_SRC_DOMAINS=${CSP_STYLE_SRC_DOMAINS}
+      - CSP_FONT_SRC_DOMAINS=${CSP_FONT_SRC_DOMAINS}
+
+  jobs:
+    image: classroomio/jobs:${CIO_VERSION:-latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://$SERVICE_USER_POSTGRES:$SERVICE_PASSWORD_POSTGRES@postgres:5432/${POSTGRES_DB:-classroomio}
+      - OBJECT_STORAGE_ENDPOINT=http://minio:9000
+      - OBJECT_STORAGE_PUBLIC_ENDPOINT=$SERVICE_URL_MINIO
+      - OBJECT_STORAGE_ACCESS_KEY_ID=$SERVICE_USER_MINIO
+      - OBJECT_STORAGE_SECRET_ACCESS_KEY=$SERVICE_PASSWORD_MINIO
+      - OBJECT_STORAGE_FORCE_PATH_STYLE=true
+      - OBJECT_STORAGE_MEDIA_PUBLIC_BASE_URL=$SERVICE_URL_MINIO/media
+      - OBJECT_STORAGE_BUCKET_VIDEOS=videos
+      - OBJECT_STORAGE_BUCKET_DOCUMENTS=documents
+      - OBJECT_STORAGE_BUCKET_MEDIA=media
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_SENDER=${SMTP_SENDER}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

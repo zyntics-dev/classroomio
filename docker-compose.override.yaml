@@ -1,0 +1,8 @@
+# Local-only override (not committed): this machine already runs a native
+# PostgreSQL on 5432, so expose the classroomio Postgres on host port 5433.
+# DATABASE_URL in apps/api/.env, apps/jobs/.env and packages/db/.env use 5433.
+# Start infra with: docker compose up -d postgres redis
+services:
+  postgres:
+    ports: !override
+      - '127.0.0.1:5433:5432'
