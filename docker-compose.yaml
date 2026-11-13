@@ -5,7 +5,7 @@ services:
     # Bound to localhost only so host tools (pnpm api:dev, db:setup) can reach it
     # without exposing the database to the LAN.
     ports:
-      - '127.0.0.1:5432:5432'
+      - '127.0.0.1:5438:5432'
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-classroomio}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -15,11 +15,7 @@ services:
     healthcheck:
       # Require a successful query so we only pass once Postgres is out of recovery
       # (pg_isready can pass while DB is still in recovery, causing 57P03 on sign-in)
-      test:
-        [
-          'CMD-SHELL',
-          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-classroomio} && psql -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-classroomio} -tAc 'SELECT 1'"
-        ]
+      test: [ 'CMD-SHELL', "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-classroomio} && psql -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-classroomio} -tAc 'SELECT 1'" ]
       interval: 5s
       timeout: 5s
       retries: 15
@@ -31,11 +27,11 @@ services:
     # Bound to localhost only (see postgres note above).
     ports:
       - '127.0.0.1:6379:6379'
-    command: ['redis-server', '--appendonly', 'yes']
+    command: [ 'redis-server', '--appendonly', 'yes' ]
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
+      test: [ 'CMD', 'redis-cli', 'ping' ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -65,7 +61,7 @@ services:
       - storage-data:/data
     healthcheck:
       # 127.0.0.1: localhost resolves to IPv6 in the image, SeaweedFS binds IPv4.
-      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:9000/healthz']
+      test: [ 'CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:9000/healthz' ]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -113,13 +109,7 @@ services:
         condition: service_healthy
     healthcheck:
       # node:slim has no curl/wget; use Node's global fetch (Node 20+).
-      test:
-        [
-          'CMD',
-          'node',
-          '-e',
-          "fetch('http://localhost:3081/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-        ]
+      test: [ 'CMD', 'node', '-e', "fetch('http://localhost:3081/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" ]
       interval: 10s
       timeout: 5s
       retries: 12
